@@ -8,6 +8,14 @@ import time
 
 # Function to create DRTP packet with header and optional data
 #creates a full packet
+## Arguments:
+# seq: sequence number (int)
+# ack: acknowledgment number (int)
+# flags: control flags (int)
+# window: receiver window size (int)
+# data: optional data payload (bytes), default empty
+# Returns:
+# The created packet combining header + data, used for sending over the network.
 #b means that if user doesnt send any data it will use empty data.
 def create_packet(seq, ack, flags, window, data=b''):
     #this creates a binary header. takes the integers and packs them into bytes. HHHH chooses the format
@@ -17,6 +25,10 @@ def create_packet(seq, ack, flags, window, data=b''):
 
 # Function to parse a received DRTP packet into header fields and data
 # what it does is that it unpacks the function and returns the values as they initially were
+# Arguments:
+# packet: the raw received packet (bytes)
+# Returns:
+# seq, ack, flags, window, data — useful for the application logic (identifying packet type and payload)
 def parse_packet(packet):
     header = packet[:8]  # First 8 bytes are header
     seq, ack, flags, window = struct.unpack('!HHHH', header)  # Unpack header fields
@@ -24,9 +36,19 @@ def parse_packet(packet):
     return seq, ack, flags, window, data
 
 # Server side function to receive file
+# Description:
+# Listens for client connection, receives file in chunks, handles connection establishment and teardown.
+# Arguments:
+# ip: server's IP address to bind to (must be in dotted decimal format, e.g., 10.0.1.2)
+# port: server's port number (must be between 1024–65535)
+# discard_seq: sequence number to simulate packet loss (int)
+# Returns:
+# None. Server writes the received data to a file ('received_file') and prints throughput at the end.
 def server(ip, port, discard_seq):
     # Create UDP socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Validate IP and port formats
+    # (you already implicitly trust args, so no strict validation is added, which is fine in this context)
     sock.bind((ip, port))  # Bind socket to IP and port
     print(f"Server listening on {ip}:{port}")
 
@@ -123,8 +145,16 @@ def server(ip, port, discard_seq):
     sock.close()
 
 # Client side function to send file
+# Description:
+# Establishes connection to server, sends file data reliably using a sliding window, and handles teardown.
+# Arguments:
+# ip: server's IP address to connect to (must be dotted decimal, e.g., 10.0.1.2)
+# port: server's port number (must be valid, 1024–65535)
+# filename: path to the file to be sent
+# window_size: sliding window size for transmission
+# Returns:
+# None. File is transmitted successfully and connection is closed properly.
 def client(ip, port, filename, window_size):
-    # Create UDP socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     #sets timeout to 400 milliseconds
     sock.settimeout(0.4)
@@ -133,27 +163,38 @@ def client(ip, port, filename, window_size):
     server_addr = (ip, port)
 
     # initializes the Three-way handshake
-    #the first sequence which is numbered zero is the syn packet which is the
-    #1 in 0010. it also sends window size and the ip and port
-    sock.sendto(create_packet(0, 0, 0b0010, window_size), server_addr)
-    #confirms that it has sent it
-    print("SYN packet is sent")
-    #keep in mind that 0010 is synbit 0110 is that it was acked and
-    #0001 is a fin bit
+    # Description:
+    # Sends SYN packet to initiate connection, waits for SYN-ACK.
+    # If no response from server, catches timeout and prints "Connection failed."
+    # Ensures clean exit if server is down or unreachable.
+    try:
+        #the first sequence which is numbered zero is the syn packet which is the
+        #1 in 0010. it also sends window size and the ip and port
+        sock.sendto(create_packet(0, 0, 0b0010, window_size), server_addr)
+        #confirms that it has sent it
+        print("SYN packet is sent")
+        #keep in mind that 0010 is synbit 0110 is that it was acked and
+        #0001 is a fin bit
 
-    # Wait for SYN-ACK from server side. once received its stored in data
-    data, _ = sock.recvfrom(1024)
-    #the variable data is then unpacked and divided by the variables
-    seq, ack, flags, recv_window, _ = parse_packet(data)
-    #this is if the syn packet is acknowledged
-    if flags & 0b0110:
-        print("SYN-ACK packet is received")
+        # Wait for SYN-ACK from server side. once received its stored in data
+        data, _ = sock.recvfrom(1024)
+        #the variable data is then unpacked and divided by the variables
+        seq, ack, flags, recv_window, _ = parse_packet(data)
+        #this is if the syn packet is acknowledged
+        if flags & 0b0110:
+            print("SYN-ACK packet is received")
 
-    # Send ACK 0100 confirming that the syn ack was received and that data
-    #transfer can begin.
-    sock.sendto(create_packet(0, ack, 0b0100, window_size), server_addr)
-    print("ACK packet is sent")
-    print("Connection established")
+        # Send ACK 0100 confirming that the syn ack was received and that data
+        #transfer can begin.
+        sock.sendto(create_packet(0, ack, 0b0100, window_size), server_addr)
+        print("ACK packet is sent")
+        print("Connection established")
+
+    except (socket.timeout, ConnectionResetError):
+    # Catches timeout or forced close if server does not respond.
+        print("Connection failed")
+        sock.close()
+        return
 
     # Read file and split into 992 byte chunks
     #opens the file in binary mode and shortens it to f
@@ -174,7 +215,8 @@ def client(ip, port, filename, window_size):
     base = 1
     # Next sequence number to send
     next_seq = 1
-    #actual window size
+    #actual window size. it takes the lesser of the two values and uses that as window size.
+    #it can never exceed 15
     window = min(window_size, recv_window)
     #total number of chunks to send
     total_chunks = len(chunks)
@@ -227,7 +269,7 @@ def client(ip, port, filename, window_size):
 
     # Two-way connection teardown initiated by sending a fin packet
     sock.sendto(create_packet(0, 0, 0b0001, 0), server_addr)
-    print("FIN packet packet is sent")
+    print("FIN packet is sent")
 
     #waits for the acknowledgement of the sent fin packet
     data, _ = sock.recvfrom(1024)
@@ -241,12 +283,24 @@ def client(ip, port, filename, window_size):
     sock.close()
 
 # Main function to parse arguments and run server or client
+# Description:
+# Parses command line arguments and starts either the server or client based on user input.
+# Arguments:
+# -s/--server: flag to run as server
+# -c/--client: flag to run as client
+# -i/--ip: target IP address
+# -p/--port: target port
+# -f/--file: filename (required for client)
+# -w/--window: sliding window size (client)
+# -d/--discard: sequence number to discard (server)
+# Returns:
+# None. Executes appropriate role (server or client) as requested by user.
 def main():
-    #creates parse object and other options
+    #creates parse object and other options with defaults on some
     parser = argparse.ArgumentParser()
     parser.add_argument('-s', '--server', action='store_true')
     parser.add_argument('-c', '--client', action='store_true')
-    parser.add_argument('-i', '--ip', type=str, default='127.0.0.1')
+    parser.add_argument('-i', '--ip', type=str, default='10.0.1.2')
     parser.add_argument('-p', '--port', type=int, default=8088)
     parser.add_argument('-f', '--file', type=str)
     parser.add_argument('-w', '--window', type=int, default=3)
